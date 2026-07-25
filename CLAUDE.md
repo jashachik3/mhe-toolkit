@@ -6,7 +6,13 @@ screens via "Add to Home Screen" in Safari — behaves like a native app.
 
 ## Tech stack
 
-- Vite + React (no TypeScript, no Tailwind, no CSS framework)
+- Vite + React + **TypeScript** (`strict: true`, including
+  `noUnusedLocals`/`noUnusedParameters`) — migrated from plain JS
+  mid-2026. No Tailwind, no CSS framework.
+- `npm run build` runs `tsc --noEmit` before `vite build`, so a type error
+  fails the build the same as a broken import would. `npm run typecheck`
+  runs just the type check on its own (fast, no bundling) — use this while
+  iterating instead of a full build.
 - Vitest for unit tests, targeting the pure calculator functions (see
   "File layout" and "Calculator math + tests" below). `npm test` runs the
   suite once; `npm run test:watch` for a watch-mode loop while editing.
@@ -20,41 +26,52 @@ screens via "Add to Home Screen" in Safari — behaves like a native app.
 ## File layout
 
 Was a single ~1,950-line `App.jsx` until it was split into modules for
-maintainability (mid-2026). Current layout:
+maintainability, then migrated file-by-file to TypeScript (both mid-2026).
+Current layout:
 
 ```
 src/
-  App.jsx              — top-level router only (~30 lines)
-  theme.js             — color tokens (C), fonts, shared label style
+  App.tsx              — top-level router only (~30 lines)
+  main.tsx
+  theme.ts             — color tokens (C), fonts, shared label style
   lib/
-    storage.js         — usePersistentState / usePersistentJSON
-    random.js          — hashSeed (PRNG) / sampleTriangular
-    routing.js         — useHashView (URL-hash-backed screen routing)
+    storage.ts         — usePersistentState / usePersistentJSON
+    random.ts          — hashSeed (PRNG) / sampleTriangular
+    routing.ts         — useHashView (URL-hash-backed screen routing),
+                          View and ScreenProps types shared by every screen
+    units.ts           — UnitKind/UnitSystem types + conversion helpers
+    unitSystem.ts       — the imperial/metric toggle's field registry
   calculators/
-    speedThroughput.js, horsepower.js, curveGeometry.js,
-    accumulation.js, gapping.js  — pure math, no React. Each has a
-    matching `*.test.js` alongside it.
+    speedThroughput.ts, horsepower.ts, curveGeometry.ts,
+    accumulation.ts, gapping.ts  — pure math, no React, each exporting a
+    typed `FooInput`/`FooResult` interface pair. Each has a matching
+    `*.test.ts` alongside it (plus `testUtils.ts`'s `unwrap()` helper for
+    narrowing a calculator's `T | null` return in tests — see "Calculator
+    math + tests" below).
   components/
-    Plate.jsx, Field.jsx, Select.jsx, Readout.jsx, InfoNote.jsx,
-    Header.jsx          — shared UI primitives
+    Plate.tsx, Field.tsx, Select.tsx, Readout.tsx, InfoNote.tsx,
+    Header.tsx          — shared UI primitives, each with a typed props
+    interface
   diagrams/
-    DiagramLabel.jsx, SpeedDiagram.jsx, HPDiagram.jsx, CurveDiagram.jsx,
-    AccumDiagram.jsx, Histogram.jsx, GapDiagram.jsx
+    DiagramLabel.tsx, SpeedDiagram.tsx, HPDiagram.tsx, CurveDiagram.tsx,
+    AccumDiagram.tsx, Histogram.tsx, GapDiagram.tsx
   screens/
-    Home.jsx, SpeedCalc.jsx, HPCalc.jsx, CurveCalc.jsx, AccumCalc.jsx,
-    GapCalc.jsx, ReferenceScreen.jsx
+    Home.tsx, SpeedCalc.tsx, HPCalc.tsx, CurveCalc.tsx, AccumCalc.tsx,
+    GapCalc.tsx, ReferenceScreen.tsx  — each takes `ScreenProps` (from
+    `lib/routing.ts`) rather than redeclaring the `setView` prop shape
 ```
 
 The team edits this app both through Claude Code and directly via GitHub's
 web editor, so keep this structure for new work rather than reverting to
 one giant file: put new calculator math in `src/calculators/` (with a
-test file), the screen in `src/screens/`, and register it in `App.jsx`.
-Editing a single small file via the GitHub web UI is still easy under this
-layout — you just need to know which file, hence this map.
+typed input/result interface and a test file), the screen in
+`src/screens/`, and register it in `App.tsx`. Editing a single small file
+via the GitHub web UI is still easy under this layout — you just need to
+know which file, hence this map.
 
 ## Design system
 
-Brand colors (LogistiQ), defined in the `C` token object in `src/theme.js`:
+Brand colors (LogistiQ), defined in the `C` token object in `src/theme.ts`:
 - `C.navy` `#002F6C` — primary text, headlines, primary accent
 - `C.green` `#78BE20` — eyebrow labels, secondary accent
 - `C.gray` `#888B8D` — muted/secondary text
@@ -83,15 +100,15 @@ than rolling new ones:
 - `InfoNote` — the muted icon+text callout used for the disclosure box at
   the bottom of every calculator (see "Honesty / disclosure convention")
 - `Header` — back button + screen title
-- `DiagramLabel` (`src/diagrams/DiagramLabel.jsx`) — small text label used
+- `DiagramLabel` (`src/diagrams/DiagramLabel.tsx`) — small text label used
   inside SVG diagrams
-- `ModuleCard` — home screen navigation card (lives in `screens/Home.jsx`
+- `ModuleCard` — home screen navigation card (lives in `screens/Home.tsx`
   since it's only used there, not shared across screens)
 
 ## App structure
 
-Single-page app. `App.jsx` holds a `view` string via `useHashView()`
-(`src/lib/routing.js`) — this mirrors the view into `window.location.hash`
+Single-page app. `App.tsx` holds a `view` string via `useHashView()`
+(`src/lib/routing.ts`) — this mirrors the view into `window.location.hash`
 rather than plain `useState`, so the browser back/forward buttons work and
 a specific calculator can be linked/bookmarked directly (e.g. `#gap`). It
 is NOT persisted to `localStorage` — a fresh page load with no hash always
@@ -139,7 +156,7 @@ before changing it again:
 Don't reintroduce per-gapper friction or a physics simulation here without
 being asked — it was a deliberate simplification, not an oversight.
 
-## Persistence hooks (`src/lib/storage.js`)
+## Persistence hooks (`src/lib/storage.ts`)
 
 - `usePersistentState(key, defaultValue)` — for scalar string values, backed
   by `localStorage`, namespaced under `mhe-toolkit:${key}`
@@ -150,7 +167,7 @@ When adding a new calculator's inputs, use these so values survive closing
 and reopening the app (there's a "Reset saved inputs" link on the home
 screen that clears everything under the `mhe-toolkit:` prefix).
 
-## Unit system: imperial/metric toggle (`src/lib/units.js`, `src/lib/unitSystem.js`)
+## Unit system: imperial/metric toggle (`src/lib/units.ts`, `src/lib/unitSystem.ts`)
 
 There's a global Imperial/Metric switch on the Home screen. Design, in
 short: **values are stored directly in whichever system is currently
@@ -180,14 +197,22 @@ Because state is stored in-system, not always-imperial:
   diagram's pixel-scaling) use `convertNumber(n, kind, system)` instead,
   which skips the string-formatting step.
 - **Every new unit-bearing field must be added to the `SCALAR_FIELDS` (or
-  `ARRAY_FIELDS`) registry in `unitSystem.js`, including its default
+  `ARRAY_FIELDS`) registry in `unitSystem.ts`, including its default
   value.** This is not optional bookkeeping — `usePersistentState` doesn't
   write to `localStorage` until its component actually mounts, so toggling
   units before ever opening a given calculator would silently skip
   converting its fields unless the registry knows the default to fall back
-  on. This exact bug shipped once already; `unitSystem.test.js` has a
+  on. This exact bug shipped once already; `unitSystem.test.ts` has a
   regression test for it (`computeConvertedFields` with an empty
   snapshot) — keep it passing when adding new fields.
+- `kind` is typed as `UnitKind` (a string union, `units.ts`) everywhere it
+  matters for catching mistakes — `Field`'s prop, the `SCALAR_FIELDS`/
+  `ARRAY_FIELDS` registries — so a typo'd kind string (e.g. `"lenght_in"`)
+  fails `tsc` instead of silently no-op'ing at runtime. The conversion
+  *functions themselves* (`unitLabel`, `convertValue`, etc.) intentionally
+  keep `kind` typed as a loose `string`, not `UnitKind` — they're meant to
+  degrade gracefully for whatever shows up at runtime, and the typo-safety
+  already comes from the typed call sites, not from these utilities.
 - HP and buffer time/percent/degree-style outputs are intentionally left
   unconverted (HP stays HP even in metric-using shops; time and
   dimensionless values don't have a metric equivalent to convert to).
@@ -215,22 +240,38 @@ overlap once the unit string is longer. Fix is to stack them on separate
 rows (a real drafting convention — stacked dimension lines), not to
 shorten the text.
 
+`HPDiagram`'s `L` dimension is drawn **parallel to the belt itself**
+(offset to the side, see the `dimOffset` comment in the component), not
+flat along the ground — this was a real reported bug. `L` is the
+conveyor's length along the incline (the belt's actual length, per the
+horsepower formula), not the horizontal run. A flat ground-level dimension
+under an inclined belt visually claims the horizontal distance equals `L`,
+which is only true at 0°; at any real incline the horizontal run is
+`L·cos(angle)`, a bit less than `L`. Don't revert this to a flat dimension
+line without accounting for that.
+
 ## Calculator math + tests (`src/calculators/`)
 
 Each calculator's formula lives in a pure function with no React/DOM
 dependency — e.g. `calcHorsepower({ conveyorLength, beltWidth, ... })` — so
-it can be unit-tested directly and called from the screen's `useMemo`. The
-screen component owns parsing display strings into/out of these functions;
-the calculator function itself takes the raw string inputs (it does its own
-`parseFloat`/validation, matching what the UI passed in) and returns either
-a result object or `null` when inputs are incomplete/invalid.
+it can be unit-tested directly and called from the screen's `useMemo`. Each
+exports a typed `FooInput`/`FooResult` interface pair; the function returns
+`FooResult | null`. The screen component owns parsing display strings
+into/out of these functions; the calculator function itself takes the raw
+string inputs (it does its own `parseFloat`/validation, matching what the
+UI passed in) and returns either a result object or `null` when inputs are
+incomplete/invalid.
 
-Every calculator has a matching `*.test.js` covering: the documented
+Every calculator has a matching `*.test.ts` covering: the documented
 default values (so the test doubles as a worked example), at least one
 edge/invalid-input case that should return `null`, and any
 formula-specific invariant worth locking in (e.g. Static Gapping's Monte
 Carlo sample determinism — same inputs must always produce the same
 histogram, since it's seeded from a hash of the inputs, not `Math.random`).
+When a test needs to access properties on a result that's known to be
+non-null in that case, use `unwrap()` from `testUtils.ts` rather than a
+bare `!` assertion — it throws a clear error instead of `undefined` access
+if a calculator's behavior ever regresses to unexpectedly returning `null`.
 When adding a calculator, add its pure function + tests here before wiring
 up the screen.
 
@@ -269,30 +310,32 @@ numbers or know exactly why they might not.
 - Hosted on **GitHub Pages**, built via **GitHub Actions**
   (`.github/workflows/deploy.yml`) — every push to `main` triggers an
   automatic build and deploy, no manual steps needed beyond `git push`
-- `vite.config.js`'s `base` path and `public/manifest.json`'s `start_url`/
+- `vite.config.ts`'s `base` path and `public/manifest.json`'s `start_url`/
   `scope` must match the GitHub repo name exactly (currently
   `/mhe-toolkit/`) — if the repo is ever renamed, update both
 - `index.html` sets `apple-mobile-web-app-status-bar-style` to `default`
   (NOT `black-translucent`) — that was a real bug (content rendering under
   the iOS status bar/notch, making the back button hard to tap); don't
   revert this without a good reason
-- Offline support: `vite-plugin-pwa` (configured in `vite.config.js`,
+- Offline support: `vite-plugin-pwa` (configured in `vite.config.ts`,
   `manifest: false` since `public/manifest.json` is still the hand-written
   source of truth) generates a Workbox service worker at build time that
   precaches the JS bundle, `index.html`, `manifest.json`, and the icons.
   Registration is auto-injected into `index.html`'s `<head>` — no code in
-  `main.jsx`. `registerType: "autoUpdate"` means a new deploy's SW takes
+  `main.tsx`. `registerType: "autoUpdate"` means a new deploy's SW takes
   over silently on next load rather than prompting the user. The SW is
   disabled in `npm run dev` (Workbox default); to test offline behavior
   locally, use `npm run build && npm run preview`.
 - After any change: if the person is running `npm run dev` locally, they
   can preview at `localhost:5173/mhe-toolkit/` before pushing. Otherwise,
   changes go live automatically ~1 minute after `git push` via Actions.
-- Before pushing a calculator math change, run `npm test` (Vitest) and
-  `npm run build` — the pure functions in `src/calculators/` are covered by
-  tests, and a broken import anywhere in the module graph will fail the
-  build immediately even though `npm run dev`'s HMR can sometimes paper
-  over it in the moment.
+- Before pushing a change, run `npm test` (Vitest) and `npm run build` —
+  the pure functions in `src/calculators/` are covered by tests, and
+  `npm run build` runs `tsc --noEmit` before bundling, so both a type error
+  and a broken import anywhere in the module graph fail the build
+  immediately, even though `npm run dev`'s HMR can sometimes paper over
+  either in the moment. `npm run typecheck` runs just the `tsc` step
+  on its own when you want a faster loop than a full build.
 - Standard commit loop: `git add -A && git commit -m "..." && git push`
 
 ## Who this is for
