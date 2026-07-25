@@ -1,5 +1,80 @@
-import React, { useState, useMemo } from "react";
-import { ArrowLeft, Gauge, Zap, Info, RotateCw } from "lucide-react";
+import React, { useState, useEffect, useMemo } from "react";
+import { ArrowLeft, Gauge, Zap, Info, RotateCw, Layers, BookOpen, ChevronsRight } from "lucide-react";
+
+// Persists a piece of state to localStorage under a namespaced key, so
+// calculator inputs survive closing and reopening the app.
+function usePersistentState(key, defaultValue) {
+  const fullKey = `mhe-toolkit:${key}`;
+  const [state, setState] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(fullKey);
+      return stored !== null ? stored : defaultValue;
+    } catch {
+      return defaultValue;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(fullKey, state);
+    } catch {
+      // localStorage unavailable (private browsing, etc.) — fail silently,
+      // the calculator still works, it just won't remember inputs.
+    }
+  }, [fullKey, state]);
+
+  return [state, setState];
+}
+
+// Same as usePersistentState but for arrays/objects (JSON-encoded), used for
+// the per-gapper speed list which changes length as gapper count changes.
+function usePersistentJSON(key, defaultValue) {
+  const fullKey = `mhe-toolkit:${key}`;
+  const [state, setState] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(fullKey);
+      return stored !== null ? JSON.parse(stored) : defaultValue;
+    } catch {
+      return defaultValue;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(fullKey, JSON.stringify(state));
+    } catch {
+      // ignore
+    }
+  }, [fullKey, state]);
+
+  return [state, setState];
+}
+
+// Small deterministic PRNG (mulberry32) so Monte Carlo results are
+// reproducible for a given set of inputs rather than jittering on every
+// re-render. Seeded from a hash of the inputs that feed the simulation.
+function hashSeed(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return () => {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return ((h ^= h >>> 16) >>> 0) / 4294967296;
+  };
+}
+
+// Samples from a triangular distribution with min a, mode c, max b, using
+// the given [0,1) random generator via inverse-CDF sampling.
+function sampleTriangular(rng, a, c, b) {
+  if (b <= a) return a;
+  const u = rng();
+  const fc = (c - a) / (b - a);
+  if (u < fc) return a + Math.sqrt(u * (b - a) * (c - a));
+  return b - Math.sqrt((1 - u) * (b - a) * (b - c));
+}
 
 // ---------- Design tokens (LogistiQ brand palette) ----------
 const C = {
@@ -130,7 +205,7 @@ function Field({ label, unit, value, onChange, step = "any", hint }) {
   );
 }
 
-function Select({ label, value, onChange, options }) {
+function Select({ label, value, onChange, options, hint }) {
   return (
     <label style={{ display: "block", marginBottom: 14 }}>
       <div
@@ -166,6 +241,11 @@ function Select({ label, value, onChange, options }) {
           </option>
         ))}
       </select>
+      {hint && (
+        <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+          {hint}
+        </div>
+      )}
     </label>
   );
 }
@@ -427,6 +507,190 @@ function CurveDiagram({ length, width, insideRadius, bw }) {
   );
 }
 
+function AccumDiagram({ zoneCount, zoneLength, speed, timeText, lengthText }) {
+  const displayCount = Math.max(1, Math.min(Math.round(zoneCount) || 1, 10));
+  const truncated = (Math.round(zoneCount) || 1) > 10;
+
+  const startX = 24,
+    endX = 296;
+  const beltY = 56;
+  const available = endX - startX;
+  const zoneW = available / displayCount;
+  const boxH = 26;
+  const zoneTop = beltY - boxH / 2;
+  const zoneBottom = beltY + boxH / 2;
+
+  return (
+    <svg viewBox="0 0 320 185" style={{ width: "100%", height: "auto", display: "block" }}>
+      {/* speed label, alone at the top so nothing else can collide with it */}
+      <DiagramLabel text={`${speed || "—"} ft/min`} x={2} y={16} anchor="start" color={C.navy} />
+
+      {/* infeed arrow */}
+      <line x1={2} y1={beltY} x2={startX - 4} y2={beltY} stroke={C.navy} strokeWidth={2} markerEnd="url(#zoneInArrow)" />
+      <defs>
+        <marker id="zoneInArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill={C.navy} />
+        </marker>
+      </defs>
+
+      {/* zone boxes, adjacent (shared walls, like real ZPA zones) */}
+      {Array.from({ length: displayCount }).map((_, i) => {
+        const x = startX + i * zoneW;
+        return (
+          <rect
+            key={i}
+            x={x}
+            y={zoneTop}
+            width={zoneW}
+            height={boxH}
+            fill={i % 2 === 0 ? "rgba(0,47,108,0.05)" : "rgba(120,190,32,0.06)"}
+            stroke={C.gray}
+            strokeWidth={1.2}
+          />
+        );
+      })}
+
+      {truncated && (
+        <DiagramLabel text={`${Math.round(zoneCount)} zones total`} x={(startX + endX) / 2} y={beltY + 4} color={C.textMuted} />
+      )}
+
+      {/* end stop */}
+      <rect x={endX} y={zoneTop - 6} width={6} height={boxH + 12} fill={C.navy} rx={1} />
+
+      {/* zone length dimension, directly under the first zone */}
+      <line x1={startX} y1={zoneBottom + 10} x2={startX + zoneW} y2={zoneBottom + 10} stroke={C.green} strokeWidth={1.2} />
+      <DiagramLabel text={`${zoneLength || "—"}"/zone`} x={startX + zoneW / 2} y={zoneBottom + 24} color={C.greenDim} />
+
+      {/* total buffer length dimension, its own row below that */}
+      <line x1={startX} y1={zoneBottom + 42} x2={endX} y2={zoneBottom + 42} stroke={C.gray} strokeWidth={1} />
+      <line x1={startX} y1={zoneBottom + 38} x2={startX} y2={zoneBottom + 46} stroke={C.gray} strokeWidth={1} />
+      <line x1={endX} y1={zoneBottom + 38} x2={endX} y2={zoneBottom + 46} stroke={C.gray} strokeWidth={1} />
+      <DiagramLabel text={lengthText} x={(startX + endX) / 2} y={zoneBottom + 56} color={C.textMuted} />
+
+      {/* headline buffer time, its own row with clear separation */}
+      <DiagramLabel text={timeText} x={(startX + endX) / 2} y={zoneBottom + 84} color={C.navy} />
+    </svg>
+  );
+}
+
+function Histogram({ bins, counts, meanValue, unit }) {
+  const maxCount = Math.max(...counts, 1);
+  const chartX = 10,
+    chartW = 300,
+    chartY = 14,
+    chartH = 110;
+  const barGap = 1.5;
+  const barW = chartW / counts.length - barGap;
+
+  const minEdge = bins[0];
+  const maxEdge = bins[bins.length - 1];
+  const meanX = chartX + ((meanValue - minEdge) / (maxEdge - minEdge)) * chartW;
+
+  return (
+    <svg viewBox="0 0 320 150" style={{ width: "100%", height: "auto", display: "block" }}>
+      {/* baseline */}
+      <line x1={chartX} y1={chartY + chartH} x2={chartX + chartW} y2={chartY + chartH} stroke={C.hairline} strokeWidth={1} />
+
+      {/* bars */}
+      {counts.map((c, i) => {
+        const h = (c / maxCount) * chartH;
+        const x = chartX + i * (barW + barGap);
+        return (
+          <rect
+            key={i}
+            x={x}
+            y={chartY + chartH - h}
+            width={barW}
+            height={h}
+            fill="rgba(0,47,108,0.35)"
+          />
+        );
+      })}
+
+      {/* mean marker */}
+      <line x1={meanX} y1={chartY - 4} x2={meanX} y2={chartY + chartH + 4} stroke={C.green} strokeWidth={1.4} strokeDasharray="3,2" />
+      <DiagramLabel text={`mean ${meanValue.toFixed(1)}${unit}`} x={meanX} y={chartY - 8} color={C.greenDim} />
+
+      {/* axis labels */}
+      <DiagramLabel text={`${minEdge.toFixed(1)}${unit}`} x={chartX} y={chartY + chartH + 16} anchor="start" color={C.textMuted} />
+      <DiagramLabel text={`${maxEdge.toFixed(1)}${unit}`} x={chartX + chartW} y={chartY + chartH + 16} anchor="end" color={C.textMuted} />
+    </svg>
+  );
+}
+
+function GapDiagram({ parcelLength, inputSpeed, stageSpeeds, gapText, valid }) {
+  const Lp = Math.max(parseFloat(parcelLength) || 0, 4);
+  const scale = Math.min(70 / Lp, 3.2);
+  const boxW = Lp * scale;
+  const boxH = 20;
+
+  const stages = stageSpeeds.slice(0, 6); // cap displayed stage chips for readability
+  const truncatedStages = stageSpeeds.length > 6;
+
+  // "before" scene: two boxes touching
+  const beforeY = 34;
+  const beforeX1 = 20;
+  const beforeX2 = beforeX1 + boxW;
+
+  // gapper stage strip
+  const stripY = 76;
+  const stripX = 20;
+  const stripW = 280;
+  const chipW = stripW / Math.max(stages.length, 1);
+
+  // "after" scene: two boxes with a gap sized relative to boxW (visually
+  // exaggerated/compressed as needed so it always reads clearly)
+  const gapVal = parseFloat(gapText) || 0;
+  const gapPx = Math.max(Math.min(gapVal * scale, 140), 6);
+  const afterY = 140;
+  const afterX1 = 20;
+  const afterX2 = afterX1 + boxW + gapPx;
+
+  return (
+    <svg viewBox="0 0 320 175" style={{ width: "100%", height: "auto", display: "block" }}>
+      {/* before */}
+      <DiagramLabel text={`Back-to-back @ ${inputSpeed || "—"} ft/min`} x={20} y={16} anchor="start" color={C.textMuted} />
+      <rect x={beforeX1} y={beforeY} width={boxW} height={boxH} fill="rgba(0,47,108,0.08)" stroke={C.navy} strokeWidth={1.6} rx={2} />
+      <rect x={beforeX2} y={beforeY} width={boxW} height={boxH} fill="rgba(0,47,108,0.08)" stroke={C.navy} strokeWidth={1.6} rx={2} />
+
+      {/* gapper stage strip */}
+      {stages.map((s, i) => (
+        <g key={i}>
+          <rect
+            x={stripX + i * chipW}
+            y={stripY}
+            width={chipW}
+            height={22}
+            fill={i % 2 === 0 ? "rgba(120,190,32,0.06)" : "rgba(0,47,108,0.05)"}
+            stroke={C.gray}
+            strokeWidth={1}
+          />
+          <DiagramLabel text={`${s || "—"}`} x={stripX + i * chipW + chipW / 2} y={stripY + 14} color={C.greenDim} />
+        </g>
+      ))}
+      <DiagramLabel text={truncatedStages ? `${stageSpeeds.length} gappers, speeds ft/min` : "gapper speeds, ft/min"} x={stripX + stripW / 2} y={stripY - 6} color={C.textMuted} />
+
+      {/* connecting arrow */}
+      <line x1={160} y1={stripY + 34} x2={160} y2={afterY - 12} stroke={C.hairline} strokeWidth={1} strokeDasharray="2,2" />
+
+      {/* after */}
+      <rect x={afterX1} y={afterY} width={boxW} height={boxH} fill="rgba(0,47,108,0.08)" stroke={C.navy} strokeWidth={1.6} rx={2} />
+      <rect x={afterX2 - boxW} y={afterY} width={boxW} height={boxH} fill="rgba(120,190,32,0.1)" stroke={C.green} strokeWidth={1.6} rx={2} />
+
+      {/* gap dimension */}
+      <line x1={afterX1 + boxW} y1={afterY + boxH + 8} x2={afterX2 - boxW} y2={afterY + boxH + 8} stroke={C.green} strokeWidth={1.2} />
+      <line x1={afterX1 + boxW} y1={afterY + boxH + 4} x2={afterX1 + boxW} y2={afterY + boxH + 12} stroke={C.green} strokeWidth={1.2} />
+      <line x1={afterX2 - boxW} y1={afterY + boxH + 4} x2={afterX2 - boxW} y2={afterY + boxH + 12} stroke={C.green} strokeWidth={1.2} />
+      <DiagramLabel
+        text={valid ? `${gapText}" gap` : `${gapText}" gap (check speeds)`}
+        x={(afterX1 + boxW + afterX2 - boxW) / 2}
+        y={afterY + boxH + 24}
+        color={valid ? C.greenDim : C.warn}
+      />
+    </svg>
+  );
+}
+
 function Header({ title, onBack }) {
   return (
     <div
@@ -573,6 +837,45 @@ function Home({ setView }) {
         accent={C.gray}
         onClick={() => setView("curve")}
       />
+      <ModuleCard
+        icon={<Layers size={20} />}
+        title="Accumulation Buffer / Time"
+        sub="Buffer time from zone count & speed"
+        accent={C.navy}
+        onClick={() => setView("accum")}
+      />
+      <ModuleCard
+        icon={<ChevronsRight size={20} />}
+        title="Static Gapping"
+        sub="Gap created by speed-up conveyors"
+        accent={C.steel}
+        onClick={() => setView("gap")}
+      />
+
+      <button
+        onClick={() => setView("reference")}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          width: "100%",
+          background: "transparent",
+          border: `1px dashed ${C.hairline}`,
+          borderRadius: 4,
+          padding: "12px 14px",
+          marginTop: 4,
+          cursor: "pointer",
+          color: C.textMuted,
+          fontFamily: displayFont,
+          fontSize: 12,
+          letterSpacing: "0.05em",
+          textTransform: "uppercase",
+        }}
+      >
+        <BookOpen size={15} />
+        Formula Reference
+      </button>
 
       <div
         style={{
@@ -592,18 +895,45 @@ function Home({ setView }) {
           against manufacturer specs (CEMA method) for final design.
         </div>
       </div>
+
+      <button
+        onClick={() => {
+          if (window.confirm("Reset all saved calculator inputs back to defaults?")) {
+            try {
+              Object.keys(window.localStorage)
+                .filter((k) => k.startsWith("mhe-toolkit:"))
+                .forEach((k) => window.localStorage.removeItem(k));
+              window.location.reload();
+            } catch {
+              // ignore
+            }
+          }
+        }}
+        style={{
+          display: "block",
+          margin: "16px auto 0",
+          background: "none",
+          border: "none",
+          color: C.textMuted,
+          fontSize: 11.5,
+          textDecoration: "underline",
+          cursor: "pointer",
+        }}
+      >
+        Reset saved inputs
+      </button>
     </div>
   );
 }
 
 // ---------- Speed / Throughput ----------
 function SpeedCalc({ setView }) {
-  const [mode, setMode] = useState("toSpeed"); // toSpeed | toThroughput
-  const [throughputUnit, setThroughputUnit] = useState("min"); // min | hr, only used in toSpeed mode
-  const [throughput, setThroughput] = useState("30");
-  const [parcelLength, setParcelLength] = useState("18");
-  const [gap, setGap] = useState("6");
-  const [speed, setSpeed] = useState("65");
+  const [mode, setMode] = usePersistentState("speed.mode", "toSpeed"); // toSpeed | toThroughput
+  const [throughputUnit, setThroughputUnit] = usePersistentState("speed.throughputUnit", "min"); // min | hr, only used in toSpeed mode
+  const [throughput, setThroughput] = usePersistentState("speed.throughput", "30");
+  const [parcelLength, setParcelLength] = usePersistentState("speed.parcelLength", "18");
+  const [gap, setGap] = usePersistentState("speed.gap", "6");
+  const [speed, setSpeed] = usePersistentState("speed.speed", "65");
 
   const result = useMemo(() => {
     const len = parseFloat(parcelLength); // inches
@@ -768,14 +1098,14 @@ const FRICTION_OPTIONS = [
 const MOTOR_SIZES = [0.33, 0.5, 0.75, 1, 1.5, 2, 3, 5, 7.5, 10, 15, 20, 25, 30, 40, 50];
 
 function HPCalc({ setView }) {
-  const [conveyorLength, setConveyorLength] = useState("50");
-  const [beltWidth, setBeltWidth] = useState("24");
-  const [beltUnitWeight, setBeltUnitWeight] = useState("1.5");
-  const [loadPerFoot, setLoadPerFoot] = useState("20");
-  const [speed, setSpeed] = useState("65");
-  const [angle, setAngle] = useState("0");
-  const [friction, setFriction] = useState("0.10");
-  const [efficiency, setEfficiency] = useState("85");
+  const [conveyorLength, setConveyorLength] = usePersistentState("hp.conveyorLength", "50");
+  const [beltWidth, setBeltWidth] = usePersistentState("hp.beltWidth", "24");
+  const [beltUnitWeight, setBeltUnitWeight] = usePersistentState("hp.beltUnitWeight", "1.5");
+  const [loadPerFoot, setLoadPerFoot] = usePersistentState("hp.loadPerFoot", "20");
+  const [speed, setSpeed] = usePersistentState("hp.speed", "65");
+  const [angle, setAngle] = usePersistentState("hp.angle", "0");
+  const [friction, setFriction] = usePersistentState("hp.friction", "0.10");
+  const [efficiency, setEfficiency] = usePersistentState("hp.efficiency", "85");
 
   const result = useMemo(() => {
     const L = parseFloat(conveyorLength); // ft
@@ -894,10 +1224,10 @@ function HPCalc({ setView }) {
 
 // ---------- Belt Curve Geometry ----------
 function CurveCalc({ setView }) {
-  const [pkgLength, setPkgLength] = useState("20");
-  const [pkgWidth, setPkgWidth] = useState("14");
-  const [insideRadius, setInsideRadius] = useState("24");
-  const [clearance, setClearance] = useState("1.5");
+  const [pkgLength, setPkgLength] = usePersistentState("curve.pkgLength", "20");
+  const [pkgWidth, setPkgWidth] = usePersistentState("curve.pkgWidth", "14");
+  const [insideRadius, setInsideRadius] = usePersistentState("curve.insideRadius", "24");
+  const [clearance, setClearance] = usePersistentState("curve.clearance", "1.5");
 
   const result = useMemo(() => {
     const L = parseFloat(pkgLength);
@@ -1014,6 +1344,557 @@ function CurveCalc({ setView }) {
   );
 }
 
+// ---------- Accumulation Buffer / Time ----------
+function AccumCalc({ setView }) {
+  const [speed, setSpeed] = usePersistentState("accum.speed", "100");
+  const [zoneLength, setZoneLength] = usePersistentState("accum.zoneLength", "24");
+  const [zoneCount, setZoneCount] = usePersistentState("accum.zoneCount", "10");
+
+  const result = useMemo(() => {
+    const V = parseFloat(speed);
+    const zl = parseFloat(zoneLength);
+    const N = parseFloat(zoneCount);
+    if ([V, zl, N].some((n) => isNaN(n)) || V <= 0 || zl <= 0 || N < 1) return null;
+
+    const totalLengthFt = (N * zl) / 12;
+    const bufferTimeMin = totalLengthFt / V;
+    const bufferTimeSec = bufferTimeMin * 60;
+
+    return {
+      totalLengthFt: totalLengthFt.toFixed(1),
+      bufferTimeSec: bufferTimeSec.toFixed(0),
+      bufferTimeMin: bufferTimeMin.toFixed(2),
+      packageCapacity: Math.floor(N),
+    };
+  }, [speed, zoneLength, zoneCount]);
+
+  return (
+    <div>
+      <Header title="Accumulation Buffer / Time" onBack={() => setView("home")} />
+      <div style={{ padding: 16 }}>
+        <Plate style={{ marginBottom: 18 }}>
+          <Field
+            label="Infeed Speed"
+            unit="ft/min"
+            value={speed}
+            onChange={setSpeed}
+          />
+          <Field
+            label="Zone Length"
+            unit="in"
+            value={zoneLength}
+            onChange={setZoneLength}
+            hint="Length of each accumulation zone"
+          />
+          <Field
+            label="Number of Zones"
+            unit="count"
+            value={zoneCount}
+            onChange={setZoneCount}
+          />
+        </Plate>
+
+        <Plate style={{ marginBottom: 18 }}>
+          <AccumDiagram
+            zoneCount={parseFloat(zoneCount) || 1}
+            zoneLength={zoneLength}
+            speed={speed}
+            lengthText={result ? `${result.totalLengthFt} ft total` : "—"}
+            timeText={result ? `${result.bufferTimeSec} sec buffer` : "—"}
+          />
+        </Plate>
+
+        <Plate>
+          {result ? (
+            <>
+              <Readout label="Buffer Time Before Inbound Must Stop" value={result.bufferTimeSec} unit="sec" big />
+              <div style={{ fontFamily: monoFont, fontSize: 12, color: C.textMuted, marginTop: 8 }}>
+                {result.bufferTimeMin} min &middot; {result.totalLengthFt} ft of total accumulation
+              </div>
+              <div
+                style={{
+                  marginTop: 16,
+                  paddingTop: 14,
+                  borderTop: `1px solid ${C.hairline}`,
+                }}
+              >
+                <Readout label="Package Capacity (1 per zone)" value={result.packageCapacity} unit="count" />
+              </div>
+            </>
+          ) : (
+            <div style={{ color: C.textMuted, fontSize: 13 }}>Enter values above</div>
+          )}
+        </Plate>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "flex-start",
+            marginTop: 16,
+            padding: 12,
+            background: "#EBEEF0",
+            border: `1px solid ${C.hairline}`,
+            borderRadius: 4,
+          }}
+        >
+          <Info size={14} color={C.textMuted} style={{ marginTop: 2, flexShrink: 0 }} />
+          <div style={{ fontSize: 11.5, color: C.textMuted, lineHeight: 1.5 }}>
+            Buffer Time = (Zones × Zone Length) ÷ Infeed Speed. This is the
+            time available to fill the entire accumulation section end to
+            end before you'd need to stop inbound flow — assumes zones fill
+            continuously at line speed and one package per zone, standard
+            for zone-controlled accumulation.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Static Gapping ----------
+function GapCalc({ setView }) {
+  const [parcelLength, setParcelLength] = usePersistentState("gap.parcelLength", "24");
+  const [minParcelLength, setMinParcelLength] = usePersistentState("gap.minParcelLength", "16");
+  const [maxParcelLength, setMaxParcelLength] = usePersistentState("gap.maxParcelLength", "34");
+  const [inputSpeed, setInputSpeed] = usePersistentState("gap.inputSpeed", "60");
+  const [gapperCount, setGapperCount] = usePersistentState("gap.gapperCount", "3");
+  const [gapperSpeeds, setGapperSpeeds] = usePersistentJSON("gap.gapperSpeeds", ["75", "95", "120"]);
+
+  // keep the speed-array length in sync with gapperCount
+  useEffect(() => {
+    const n = Math.max(1, Math.min(Math.round(parseFloat(gapperCount)) || 1, 8));
+    setGapperSpeeds((prev) => {
+      if (prev.length === n) return prev;
+      if (prev.length > n) return prev.slice(0, n);
+      const last = parseFloat(prev[prev.length - 1]) || 60;
+      const extra = Array.from({ length: n - prev.length }, (_, i) => String(Math.round(last + (i + 1) * 20)));
+      return [...prev, ...extra];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gapperCount]);
+
+  const setGapperSpeedAt = (i, val) => {
+    setGapperSpeeds((prev) => {
+      const next = [...prev];
+      next[i] = val;
+      return next;
+    });
+  };
+
+  const gapResult = useMemo(() => {
+    const Lp = parseFloat(parcelLength);
+    const s0 = parseFloat(inputSpeed);
+    const speeds = gapperSpeeds.map((s) => parseFloat(s));
+    if (isNaN(Lp) || isNaN(s0) || speeds.some((s) => isNaN(s)) || speeds.length === 0) return null;
+
+    const sequence = [s0, ...speeds];
+    let valid = true;
+    for (let i = 1; i < sequence.length; i++) {
+      if (sequence[i] < sequence[i - 1]) valid = false;
+    }
+
+    const stepGaps = speeds.map((sN) => (Lp * (sN / s0 - 1)).toFixed(1));
+    const gap = stepGaps[stepGaps.length - 1];
+
+    return { gap, valid, stepGaps };
+  }, [parcelLength, inputSpeed, gapperSpeeds]);
+
+  const monteCarlo = useMemo(() => {
+    const a = parseFloat(minParcelLength);
+    const c = parseFloat(parcelLength);
+    const b = parseFloat(maxParcelLength);
+    const s0 = parseFloat(inputSpeed);
+    const sN = parseFloat(gapperSpeeds[gapperSpeeds.length - 1]);
+    if ([a, c, b, s0, sN].some((n) => isNaN(n)) || b < a || c < a || c > b || s0 <= 0) return null;
+
+    const SAMPLE_COUNT = 4000;
+    const BIN_COUNT = 18;
+    const ratio = sN / s0 - 1;
+
+    const rng = hashSeed(`${a}|${c}|${b}|${s0}|${sN}`);
+    const gaps = new Array(SAMPLE_COUNT);
+    let sum = 0;
+    for (let i = 0; i < SAMPLE_COUNT; i++) {
+      const Lp = sampleTriangular(rng, a, c, b);
+      const g = Lp * ratio;
+      gaps[i] = g;
+      sum += g;
+    }
+    gaps.sort((x, y) => x - y);
+
+    const mean = sum / SAMPLE_COUNT;
+    const variance = gaps.reduce((acc, g) => acc + (g - mean) ** 2, 0) / SAMPLE_COUNT;
+    const stdDev = Math.sqrt(variance);
+    const min = gaps[0];
+    const max = gaps[SAMPLE_COUNT - 1];
+    const p5 = gaps[Math.floor(SAMPLE_COUNT * 0.05)];
+
+    const binWidth = (max - min) / BIN_COUNT || 1;
+    const bins = Array.from({ length: BIN_COUNT + 1 }, (_, i) => min + i * binWidth);
+    const counts = new Array(BIN_COUNT).fill(0);
+    gaps.forEach((g) => {
+      let idx = Math.floor((g - min) / binWidth);
+      if (idx >= BIN_COUNT) idx = BIN_COUNT - 1;
+      if (idx < 0) idx = 0;
+      counts[idx]++;
+    });
+
+    return { bins, counts, mean, stdDev, min, max, p5 };
+  }, [minParcelLength, parcelLength, maxParcelLength, inputSpeed, gapperSpeeds]);
+
+  return (
+    <div>
+      <Header title="Static Gapping" onBack={() => setView("home")} />
+      <div style={{ padding: 16 }}>
+        <Plate style={{ marginBottom: 18 }}>
+          <Field
+            label="Average / Most Likely Parcel Length"
+            unit="in"
+            value={parcelLength}
+            onChange={setParcelLength}
+            hint="Used directly for the single Gap Created result below"
+          />
+          <Field
+            label="Min Parcel Length"
+            unit="in"
+            value={minParcelLength}
+            onChange={setMinParcelLength}
+          />
+          <Field
+            label="Max Parcel Length"
+            unit="in"
+            value={maxParcelLength}
+            onChange={setMaxParcelLength}
+          />
+          <Field
+            label="Input Speed"
+            unit="ft/min"
+            value={inputSpeed}
+            onChange={setInputSpeed}
+            hint="Speed parcels arrive at, back-to-back, before gapper 1"
+          />
+          <Field
+            label="Number of Gappers"
+            unit="count"
+            value={gapperCount}
+            onChange={setGapperCount}
+          />
+
+          <div style={{ marginTop: 4 }}>
+            <div
+              style={{
+                fontFamily: displayFont,
+                fontSize: 11,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: C.textMuted,
+                marginBottom: 8,
+              }}
+            >
+              Gapper Speeds
+            </div>
+            {gapperSpeeds.map((s, i) => (
+              <Field
+                key={i}
+                label={`Gapper ${i + 1} Speed`}
+                unit="ft/min"
+                value={s}
+                onChange={(val) => setGapperSpeedAt(i, val)}
+              />
+            ))}
+          </div>
+        </Plate>
+
+        <Plate style={{ marginBottom: 18 }}>
+          <GapDiagram
+            parcelLength={parcelLength}
+            inputSpeed={inputSpeed}
+            stageSpeeds={gapperSpeeds}
+            gapText={gapResult ? gapResult.gap : "—"}
+            valid={gapResult ? gapResult.valid : true}
+          />
+        </Plate>
+
+        <Plate>
+          {gapResult ? (
+            <>
+              <Readout label="Gap Created" value={gapResult.gap} unit="in" big />
+
+              <div
+                style={{
+                  marginTop: 16,
+                  paddingTop: 14,
+                  borderTop: `1px solid ${C.hairline}`,
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: displayFont,
+                    fontSize: 11,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: C.textMuted,
+                    marginBottom: 8,
+                  }}
+                >
+                  Gap After Each Gapper
+                </div>
+                {gapResult.stepGaps.map((g, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontFamily: monoFont,
+                      fontSize: 13,
+                      color: i === gapResult.stepGaps.length - 1 ? C.navy : C.textMuted,
+                      padding: "4px 0",
+                    }}
+                  >
+                    <span>After Gapper {i + 1}</span>
+                    <span>{g}{'"'}</span>
+                  </div>
+                ))}
+              </div>
+
+              {!gapResult.valid && (
+                <div style={{ fontSize: 12, color: C.warn, marginTop: 10 }}>
+                  ⚠ One or more gapper speeds is lower than the stage before it — packages would collide, not gap. Check your speed sequence.
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ color: C.textMuted, fontSize: 13 }}>Enter values above</div>
+          )}
+        </Plate>
+
+        <Plate style={{ marginBottom: 18 }}>
+          <div
+            style={{
+              fontFamily: displayFont,
+              fontSize: 15,
+              letterSpacing: "0.02em",
+              textTransform: "uppercase",
+              color: C.navy,
+              marginBottom: 4,
+            }}
+          >
+            Gap Distribution
+          </div>
+          <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>
+            Monte Carlo — 4,000 parcels sampled from a triangular distribution (min/most likely/max), gap measured after the final gapper
+          </div>
+
+          {monteCarlo ? (
+            <>
+              <Histogram bins={monteCarlo.bins} counts={monteCarlo.counts} meanValue={monteCarlo.mean} unit={'"'} />
+
+              <div style={{ display: "flex", gap: 24, marginTop: 14 }}>
+                <Readout label="Mean Gap" value={monteCarlo.mean.toFixed(1)} unit="in" />
+                <Readout label="Std Dev" value={monteCarlo.stdDev.toFixed(1)} unit="in" />
+              </div>
+              <div style={{ display: "flex", gap: 24, marginTop: 10 }}>
+                <Readout label="Worst Case (min)" value={monteCarlo.min.toFixed(1)} unit="in" />
+                <Readout label="5th Percentile" value={monteCarlo.p5.toFixed(1)} unit="in" />
+              </div>
+            </>
+          ) : (
+            <div style={{ color: C.textMuted, fontSize: 13 }}>
+              Enter valid min/average/max parcel lengths above (min ≤ average ≤ max)
+            </div>
+          )}
+        </Plate>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "flex-start",
+            marginTop: 16,
+            padding: 12,
+            background: "#EBEEF0",
+            border: `1px solid ${C.hairline}`,
+            borderRadius: 4,
+          }}
+        >
+          <Info size={14} color={C.textMuted} style={{ marginTop: 2, flexShrink: 0 }} />
+          <div style={{ fontSize: 11.5, color: C.textMuted, lineHeight: 1.5 }}>
+            Gap = Parcel Length × (Gapper Speed / Input Speed − 1). Assumes
+            each package's speed changes essentially instantly once its
+            center of mass crosses onto a faster belt. Under that
+            assumption, the final gap depends only on parcel length and the
+            input/output speed ratio — not on gapper length or how many
+            stages you split the speed-up across — as long as speeds
+            increase monotonically along the line. A speed decrease
+            anywhere in the sequence means packages colliding rather than
+            gapping. The distribution below models parcel length as a
+            triangular distribution (min, most likely, max) — a standard
+            choice when you only have a 3-point estimate rather than real
+            measured data. Swap in your own data if you have it and want a
+            more accurate spread.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Formula Reference ----------
+function FormulaBlock({ formula }) {
+  return (
+    <div
+      style={{
+        background: C.bg,
+        border: `1px solid ${C.hairline}`,
+        borderRadius: 3,
+        padding: "10px 12px",
+        fontFamily: monoFont,
+        fontSize: 13,
+        color: C.navy,
+        marginBottom: 12,
+        overflowX: "auto",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {formula}
+    </div>
+  );
+}
+
+function VarRow({ symbol, desc }) {
+  return (
+    <div style={{ display: "flex", gap: 8, marginBottom: 4, fontSize: 12.5 }}>
+      <div style={{ fontFamily: monoFont, color: C.greenDim, minWidth: 62, flexShrink: 0 }}>
+        {symbol}
+      </div>
+      <div style={{ color: C.textMuted }}>{desc}</div>
+    </div>
+  );
+}
+
+function ReferenceCard({ title, formulas, variables, notes }) {
+  return (
+    <Plate style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          fontFamily: displayFont,
+          fontSize: 15,
+          letterSpacing: "0.02em",
+          textTransform: "uppercase",
+          color: C.navy,
+          marginBottom: 12,
+        }}
+      >
+        {title}
+      </div>
+
+      {formulas.map((f, i) => (
+        <FormulaBlock key={i} formula={f} />
+      ))}
+
+      <div style={{ marginTop: 4, marginBottom: notes ? 12 : 0 }}>
+        {variables.map((v, i) => (
+          <VarRow key={i} symbol={v.symbol} desc={v.desc} />
+        ))}
+      </div>
+
+      {notes && (
+        <div
+          style={{
+            fontSize: 11.5,
+            color: C.textMuted,
+            lineHeight: 1.5,
+            paddingTop: 10,
+            borderTop: `1px solid ${C.hairline}`,
+          }}
+        >
+          {notes}
+        </div>
+      )}
+    </Plate>
+  );
+}
+
+function ReferenceScreen({ setView }) {
+  return (
+    <div>
+      <Header title="Formula Reference" onBack={() => setView("home")} />
+      <div style={{ padding: 16 }}>
+        <ReferenceCard
+          title="Conveyor Speed / Throughput"
+          formulas={["V = (T × (L + G)) / 12", "T = (V × 12) / (L + G)"]}
+          variables={[
+            { symbol: "V", desc: "Belt speed, ft/min" },
+            { symbol: "T", desc: "Throughput, parcels/min" },
+            { symbol: "L", desc: "Average parcel length, in" },
+            { symbol: "G", desc: "Gap between parcels, in" },
+          ]}
+          notes="Assumes uniform parcel spacing at (L + G) center-to-center. Throughput shown in both parcels/min and parcels/hr in the app."
+        />
+
+        <ReferenceCard
+          title="Horsepower"
+          formulas={[
+            "Wb = (Width/12) × Length × UnitWeight",
+            "Wm = Load/ft × Length",
+            "Te = Cf × (Wb + Wm) + Wm × sin(θ)",
+            "HP = (Te × V) / 33,000 / Eff",
+          ]}
+          variables={[
+            { symbol: "Wb", desc: "Belt weight, lb" },
+            { symbol: "Wm", desc: "Total load on conveyor, lb" },
+            { symbol: "Width", desc: "Belt width, in" },
+            { symbol: "Length", desc: "Conveyor length, ft" },
+            { symbol: "UnitWeight", desc: "Belt weight per sq ft, lb/ft²" },
+            { symbol: "Cf", desc: "Friction factor (roller/slider bed)" },
+            { symbol: "θ", desc: "Incline angle, degrees" },
+            { symbol: "V", desc: "Belt speed, ft/min" },
+            { symbol: "Eff", desc: "Drive efficiency, as a decimal" },
+          ]}
+          notes="Simplified unit-handling horsepower estimate. Validate against CEMA methodology for critical or high-incline applications."
+        />
+
+        <ReferenceCard
+          title="Belt Curve Geometry"
+          formulas={["BW = √(R1² + L²) − R1 + W + C", "R2 = R1 + BW"]}
+          variables={[
+            { symbol: "BW", desc: "Minimum curve width, in" },
+            { symbol: "R1", desc: "Inside radius, in" },
+            { symbol: "R2", desc: "Required outside radius, in" },
+            { symbol: "L", desc: "Package length (direction of travel), in" },
+            { symbol: "W", desc: "Package width (across the belt), in" },
+            { symbol: "C", desc: "Clearance / safety margin, in — user-set" },
+          ]}
+          notes="Assumes the package enters the curve oriented lengthwise, leading inside corner riding the inside rail. A simplified engineering approximation, not an exact swept-path calculation — the geometric term isn't independently verified against a published CEMA clearance standard, so confirm your clearance value against your curve vendor's spec."
+        />
+
+        <ReferenceCard
+          title="Accumulation Buffer / Time"
+          formulas={["Total Length = (N × Zl) / 12", "Buffer Time = Total Length / V"]}
+          variables={[
+            { symbol: "N", desc: "Number of accumulation zones" },
+            { symbol: "Zl", desc: "Length of each zone, in" },
+            { symbol: "V", desc: "Infeed speed, ft/min" },
+          ]}
+          notes="Time available to fill the entire accumulation section end to end before inbound flow must stop. Assumes continuous fill at line speed and one package per zone — standard for zone-controlled accumulation."
+        />
+
+        <ReferenceCard
+          title="Static Gapping"
+          formulas={["Gap = Lp × (Sout / Sin − 1)"]}
+          variables={[
+            { symbol: "Lp", desc: "Average parcel length, in" },
+            { symbol: "Sin", desc: "Input speed, ft/min — speed parcels arrive at, back-to-back" },
+            { symbol: "Sout", desc: "Speed of a given gapper, ft/min" },
+          ]}
+          notes="Assumes each package's speed changes essentially instantly once its center of mass crosses onto a faster belt. Under that assumption, the gap after any given gapper depends only on parcel length and the input/that-gapper speed ratio — not on gapper length or how many stages the speed-up is split across — as long as speeds increase monotonically along the line. A speed decrease anywhere in the sequence means packages colliding rather than gapping."
+        />
+      </div>
+    </div>
+  );
+}
+
 // ---------- App ----------
 export default function App() {
   const [view, setView] = useState("home");
@@ -1033,6 +1914,9 @@ export default function App() {
       {view === "speed" && <SpeedCalc setView={setView} />}
       {view === "hp" && <HPCalc setView={setView} />}
       {view === "curve" && <CurveCalc setView={setView} />}
+      {view === "accum" && <AccumCalc setView={setView} />}
+      {view === "reference" && <ReferenceScreen setView={setView} />}
+      {view === "gap" && <GapCalc setView={setView} />}
     </div>
   );
 }
