@@ -1508,7 +1508,7 @@ function GapCalc({ setView }) {
     const sN = parseFloat(gapperSpeeds[gapperSpeeds.length - 1]);
     if ([a, c, b, s0, sN].some((n) => isNaN(n)) || b < a || c < a || c > b || s0 <= 0) return null;
 
-    const SAMPLE_COUNT = 4000;
+    const SAMPLE_COUNT = 10000;
     const BIN_COUNT = 18;
     const ratio = sN / s0 - 1;
 
@@ -1540,7 +1540,7 @@ function GapCalc({ setView }) {
       counts[idx]++;
     });
 
-    return { bins, counts, mean, stdDev, min, max, p5 };
+    return { bins, counts, mean, stdDev, min, max, p5, sampleCount: SAMPLE_COUNT };
   }, [minParcelLength, parcelLength, maxParcelLength, inputSpeed, gapperSpeeds]);
 
   return (
@@ -1683,7 +1683,7 @@ function GapCalc({ setView }) {
             Gap Distribution
           </div>
           <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>
-            Monte Carlo — 4,000 parcels sampled from a triangular distribution (min/most likely/max), gap measured after the final gapper
+            Monte Carlo — {monteCarlo ? monteCarlo.sampleCount.toLocaleString() : "N"} parcels sampled from a triangular distribution (min/most likely/max), gap measured after the final gapper
           </div>
 
           {monteCarlo ? (
